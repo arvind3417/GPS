@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Git Profile Switcher
+# GPS - Git Profile Switcher (Auto-detecting)
 # A tool to easily switch between different git user profiles
+# Auto-detects profiles from SSH config and git configs - no config file needed!
 
 set -e
 
@@ -14,80 +15,94 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Configuration directory
-PROFILES_DIR="$HOME/.git-profiles"
-PROFILES_CONFIG="$PROFILES_DIR/profiles.conf"
+# Auto-detection - no config directory needed
+# Profiles are auto-detected from ~/.ssh/config and ~/.gitconfig* files
 
-# Create profiles directory if it doesn't exist
-create_profiles_dir() {
-    if [ ! -d "$PROFILES_DIR" ]; then
-        mkdir -p "$PROFILES_DIR"
-        echo -e "${GREEN}Created profiles directory at $PROFILES_DIR${NC}"
+# Auto-detect profiles from SSH config and git configs
+detect_profiles() {
+    # Work profile from global config + default SSH host
+    work_name=$(git config --global --get user.name 2>/dev/null || echo "")
+    work_email=$(git config --global --get user.email 2>/dev/null || echo "")
+    if [[ -n "$work_name" && -n "$work_email" ]]; then
+        echo "work|$work_name|$work_email|github.com|Work profile (from global git config)"
     fi
-}
-
-# Initialize profiles config if it doesn't exist
-init_profiles_config() {
-    create_profiles_dir
-    if [ ! -f "$PROFILES_CONFIG" ]; then
-        cat > "$PROFILES_CONFIG" << 'EOF'
-# Enhanced Git Profile Switcher Configuration
-# Format: profile_name|git_name|git_email|ssh_host|description
-# Note: ssh_host is optional - if not provided, uses github.com
-
-# Example profiles:
-# work|John Doe|john.doe@company.com|github.com|Work profile for Company Inc
-# personal|John Doe|john.personal@gmail.com|github.com-personal|Personal projects
-EOF
-        echo -e "${GREEN}Created profiles configuration at $PROFILES_CONFIG${NC}"
+    
+    # Personal profile from SSH config + matching git config
+    if grep -q "Host github.com-arvind3417" ~/.ssh/config 2>/dev/null; then
+        if [[ -f "$HOME/.gitconfig-personal" ]]; then
+            personal_name=$(git config --file="$HOME/.gitconfig-personal" --get user.name 2>/dev/null || echo "")
+            personal_email=$(git config --file="$HOME/.gitconfig-personal" --get user.email 2>/dev/null || echo "")
+            if [[ -n "$personal_name" && -n "$personal_email" ]]; then
+                echo "personal|$personal_name|$personal_email|github.com-arvind3417|Personal profile (from ~/.gitconfig-personal)"
+            fi
+        fi
     fi
+    
+    # Scan for other SSH hosts that might be profiles
+    while read -r line; do
+        if [[ "$line" =~ ^Host[[:space:]]+(github\.com-[^[:space:]]+) ]]; then
+            ssh_host="${BASH_REMATCH[1]}"
+            profile_name="${ssh_host#github.com-}"
+            
+            # Skip if we already handled it above
+            [[ "$profile_name" == "arvind3417" ]] && continue
+            
+            # Look for matching git config file
+            config_file="$HOME/.gitconfig-$profile_name"
+            if [[ -f "$config_file" ]]; then
+                name=$(git config --file="$config_file" --get user.name 2>/dev/null || echo "Unknown")
+                email=$(git config --file="$config_file" --get user.email 2>/dev/null || echo "Unknown")
+                echo "$profile_name|$name|$email|$ssh_host|Auto-detected from $config_file"
+            else
+                echo "$profile_name|Unknown|Unknown|$ssh_host|SSH host found (no matching git config)"
+            fi
+        fi
+    done < ~/.ssh/config
 }
 
 # Show usage information
 show_usage() {
-    echo -e "${CYAN}Git Profile Switcher${NC}"
+    echo -e "${CYAN}GPS - Auto-detecting Git Profile Switcher${NC}"
+    echo "No config file needed - auto-detects from SSH config and git configs"
+    echo ""
     echo -e "${YELLOW}Usage:${NC}"
-    echo "  $0 list                           # List all available profiles"
-    echo "  $0 current                        # Show current active profile"
-    echo "  $0 switch <profile_name> [local]  # Switch to profile (global or local)"
-    echo "  $0 add <name> <email> [desc]      # Add new profile"
-    echo "  $0 remove <profile_name>          # Remove a profile"
-    echo "  $0 edit                           # Edit profiles configuration"
-    echo "  $0 setup                          # Auto-setup profiles from current git configs"
+    echo "  $0 list                    # Show auto-detected profiles"
+    echo "  $0 current                 # Show current status"
+    echo "  $0 switch <profile> [local] # Switch profile"
+    echo ""
+    echo -e "${YELLOW}Auto-detects from:${NC}"
+    echo "  • ~/.ssh/config (GitHub hosts)"
+    echo "  • ~/.gitconfig (global git config)"
+    echo "  • ~/.gitconfig-* (profile-specific configs)"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  $0 switch work                    # Switch globally to work profile"
     echo "  $0 switch personal local          # Switch locally (current repo) to personal"
-    echo "  $0 add work 'John Doe' john@company.com 'Work profile'"
 }
 
-# List all available profiles
+# List all auto-detected profiles
 list_profiles() {
-    init_profiles_config
-    
-    echo -e "${CYAN}Available Git Profiles:${NC}"
+    echo -e "${CYAN}Auto-detected Git Profiles:${NC}"
     echo ""
     
-    if [ ! -s "$PROFILES_CONFIG" ] || ! grep -q '^[^#].*|.*|.*' "$PROFILES_CONFIG"; then
-        echo -e "${YELLOW}No profiles configured yet.${NC}"
-        echo "Run '$0 setup' to auto-detect from your git configs or '$0 add' to create new ones."
+    profiles=$(detect_profiles)
+    if [[ -z "$profiles" ]]; then
+        echo -e "${YELLOW}No profiles auto-detected.${NC}"
+        echo "Make sure you have SSH hosts in ~/.ssh/config and git configs set up."
         return
     fi
     
-    printf "%-15s %-25s %-30s %s\n" "PROFILE" "NAME" "EMAIL" "DESCRIPTION"
-    printf "%-15s %-25s %-30s %s\n" "-------" "----" "-----" "-----------"
+    printf "%-15s %-25s %-30s %-20s %s\n" "PROFILE" "NAME" "EMAIL" "SSH HOST" "SOURCE"
+    printf "%-15s %-25s %-30s %-20s %s\n" "-------" "----" "-----" "--------" "------"
     
-    while IFS='|' read -r profile name email desc; do
-        # Skip comments and empty lines
-        [[ "$profile" =~ ^#.*$ ]] || [[ -z "$profile" ]] && continue
-        
-        printf "%-15s %-25s %-30s %s\n" "$profile" "$name" "$email" "$desc"
-    done < "$PROFILES_CONFIG"
+    echo "$profiles" | while IFS='|' read -r profile name email ssh_host desc; do
+        printf "%-15s %-25s %-30s %-20s %s\n" "$profile" "$name" "$email" "$ssh_host" "$desc"
+    done
 }
 
 # Show current active profile with enhanced SSH status
 show_current() {
-    echo -e "${CYAN}Enhanced Git Profile Status:${NC}"
+    echo -e "${CYAN}Auto-detected Git Profile Status:${NC}"
     echo ""
     
     # Global configuration
@@ -111,14 +126,13 @@ show_current() {
         echo "  Repo:  $repo_path"
         
         echo ""
-        echo -e "${YELLOW}Remote URLs and SSH Authentication:${NC}"
+        echo -e "${YELLOW}Remote URLs and SSH Hosts:${NC}"
         
         # Check each remote
         while read -r remote_name; do
             url=$(git remote get-url "$remote_name" 2>/dev/null || continue)
             echo "  $remote_name: $url"
             
-            # Show SSH host info for GitHub remotes
             if [[ "$url" =~ git@(github\.com[^:]*):.*\.git$ ]]; then
                 ssh_host="${BASH_REMATCH[1]}"
                 echo -e "    SSH Host: ${CYAN}$ssh_host${NC}"
@@ -142,28 +156,19 @@ switch_profile() {
         exit 1
     fi
     
-    init_profiles_config
+    # Find profile in auto-detected list
+    profiles=$(detect_profiles)
+    profile_line=$(echo "$profiles" | grep "^$profile_name|" || true)
     
-    # Find the profile
-    local profile_line
-    profile_line=$(grep "^$profile_name|" "$PROFILES_CONFIG" 2>/dev/null || true)
-    
-    if [ -z "$profile_line" ]; then
+    if [[ -z "$profile_line" ]]; then
         echo -e "${RED}Error: Profile '$profile_name' not found${NC}"
         echo "Available profiles:"
         list_profiles
         exit 1
     fi
     
-    # Parse profile data (handle both old and new format)
-    local git_name git_email ssh_host desc
+    # Parse profile data
     IFS='|' read -r name git_name git_email ssh_host desc <<< "$profile_line"
-    
-    # If ssh_host is empty or looks like description, treat as old format
-    if [ -z "$ssh_host" ] || [[ "$ssh_host" != *"github.com"* ]]; then
-        desc="$ssh_host"
-        ssh_host="github.com"
-    fi
     
     # Determine scope
     local scope_flag=""
@@ -180,7 +185,7 @@ switch_profile() {
         scope_flag="--global"
     fi
     
-    echo -e "${CYAN}🔄 Enhanced Profile Switch: $profile_name $scope_text${NC}"
+    echo -e "${CYAN}🔄 Auto-detected Profile Switch: $profile_name $scope_text${NC}"
     echo ""
     
     # Step 1: Set git configuration
@@ -230,10 +235,8 @@ switch_profile() {
     echo -e "${BLUE}💡 Tip: Test with 'ssh -T git@$ssh_host' if needed${NC}"
     
     echo ""
-    echo -e "${GREEN}🎉 Enhanced profile switch complete!${NC}"
-    if [ -n "$desc" ] && [ "$desc" != "" ]; then
-        echo "Description: $desc"
-    fi
+    echo -e "${GREEN}🎉 Auto-detected profile switch complete!${NC}"
+    echo "Source: $desc"
 }
 
 # Add a new profile
@@ -378,25 +381,12 @@ case "$1" in
     "switch"|"use")
         switch_profile "$2" "$3"
         ;;
-    "add"|"create")
-        add_profile "$2" "$3" "$4" "$5"
-        ;;
-    "remove"|"rm"|"delete")
-        remove_profile "$2"
-        ;;
-    "edit")
-        edit_profiles
-        ;;
-    "setup"|"init")
-        setup_profiles
-        ;;
     "help"|"--help"|"-h"|"")
         show_usage
         ;;
     *)
         echo -e "${RED}Error: Unknown command '$1'${NC}"
-        echo ""
-        show_usage
+        echo "Use '$0 help' for usage information"
         exit 1
         ;;
 esac

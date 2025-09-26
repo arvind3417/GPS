@@ -62,7 +62,7 @@ For full command reference:
 ./gps.sh switch personal local  # Switch to personal profile for this repo only
 ```
 
-## 🛠️ Management Commands
+## 🛠️ Management Commands - WIP
 
 ### Add New Profile
 ```bash
