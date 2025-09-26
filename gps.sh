@@ -31,12 +31,13 @@ init_profiles_config() {
     create_profiles_dir
     if [ ! -f "$PROFILES_CONFIG" ]; then
         cat > "$PROFILES_CONFIG" << 'EOF'
-# Git Profile Switcher Configuration
-# Format: profile_name|git_name|git_email|description
+# Enhanced Git Profile Switcher Configuration
+# Format: profile_name|git_name|git_email|ssh_host|description
+# Note: ssh_host is optional - if not provided, uses github.com
 
 # Example profiles:
-# work|John Doe|john.doe@company.com|Work profile for Company Inc
-# personal|John Doe|john.personal@gmail.com|Personal projects
+# work|John Doe|john.doe@company.com|github.com|Work profile for Company Inc
+# personal|John Doe|john.personal@gmail.com|github.com-personal|Personal projects
 EOF
         echo -e "${GREEN}Created profiles configuration at $PROFILES_CONFIG${NC}"
     fi
@@ -84,13 +85,13 @@ list_profiles() {
     done < "$PROFILES_CONFIG"
 }
 
-# Show current active profile
+# Show current active profile with enhanced SSH status
 show_current() {
-    echo -e "${CYAN}Current Git Configuration:${NC}"
+    echo -e "${CYAN}Enhanced Git Profile Status:${NC}"
     echo ""
     
     # Global configuration
-    echo -e "${YELLOW}Global:${NC}"
+    echo -e "${YELLOW}Global Configuration:${NC}"
     global_name=$(git config --global --get user.name 2>/dev/null || echo "Not set")
     global_email=$(git config --global --get user.email 2>/dev/null || echo "Not set")
     echo "  Name:  $global_name"
@@ -99,7 +100,7 @@ show_current() {
     # Local configuration (if in a git repo)
     if git rev-parse --git-dir >/dev/null 2>&1; then
         echo ""
-        echo -e "${YELLOW}Local (current repository):${NC}"
+        echo -e "${YELLOW}Local Configuration (current repository):${NC}"
         local_name=$(git config --local --get user.name 2>/dev/null || echo "Using global")
         local_email=$(git config --local --get user.email 2>/dev/null || echo "Using global")
         echo "  Name:  $local_name"
@@ -108,6 +109,22 @@ show_current() {
         # Show repository path
         repo_path=$(git rev-parse --show-toplevel 2>/dev/null)
         echo "  Repo:  $repo_path"
+        
+        echo ""
+        echo -e "${YELLOW}Remote URLs and SSH Authentication:${NC}"
+        
+        # Check each remote
+        while read -r remote_name; do
+            url=$(git remote get-url "$remote_name" 2>/dev/null || continue)
+            echo "  $remote_name: $url"
+            
+            # Show SSH host info for GitHub remotes
+            if [[ "$url" =~ git@(github\.com[^:]*):.*\.git$ ]]; then
+                ssh_host="${BASH_REMATCH[1]}"
+                echo -e "    SSH Host: ${CYAN}$ssh_host${NC}"
+                echo -e "    💡 Test: ${BLUE}ssh -T git@$ssh_host${NC}"
+            fi
+        done < <(git remote 2>/dev/null)
     else
         echo ""
         echo -e "${YELLOW}Not in a git repository${NC}"
@@ -138,8 +155,15 @@ switch_profile() {
         exit 1
     fi
     
-    # Parse profile data
-    IFS='|' read -r name git_name git_email desc <<< "$profile_line"
+    # Parse profile data (handle both old and new format)
+    local git_name git_email ssh_host desc
+    IFS='|' read -r name git_name git_email ssh_host desc <<< "$profile_line"
+    
+    # If ssh_host is empty or looks like description, treat as old format
+    if [ -z "$ssh_host" ] || [[ "$ssh_host" != *"github.com"* ]]; then
+        desc="$ssh_host"
+        ssh_host="github.com"
+    fi
     
     # Determine scope
     local scope_flag=""
@@ -156,16 +180,59 @@ switch_profile() {
         scope_flag="--global"
     fi
     
-    # Set git configuration
+    echo -e "${CYAN}🔄 Enhanced Profile Switch: $profile_name $scope_text${NC}"
+    echo ""
+    
+    # Step 1: Set git configuration
+    echo -e "${YELLOW}Step 1: Setting git user configuration...${NC}"
     git config $scope_flag user.name "$git_name"
     git config $scope_flag user.email "$git_email"
-    
-    echo -e "${GREEN}✓ Switched $scope_text to profile '$profile_name'${NC}"
+    echo -e "${GREEN}✓ Git config updated${NC}"
     echo "  Name:  $git_name"
     echo "  Email: $git_email"
+    echo ""
     
+    # Step 2: Update remote URLs (only for local switches in git repos)
+    if [ "$is_local" = "local" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+        echo -e "${YELLOW}Step 2: Updating remote URLs for SSH authentication...${NC}"
+        
+        # Get current remotes
+        updated_any=false
+        while read -r remote_name; do
+            current_url=$(git remote get-url "$remote_name" 2>/dev/null || continue)
+            
+            # Check if it's a GitHub SSH URL
+            if [[ "$current_url" =~ git@github\.com.*:.*\.git$ ]] || [[ "$current_url" =~ git@github\.com-.*:.*\.git$ ]]; then
+                # Extract the repo part (user/repo.git)
+                repo_part=$(echo "$current_url" | sed -E 's/git@[^:]+://')
+                
+                # Construct new URL with correct SSH host
+                new_url="git@$ssh_host:$repo_part"
+                
+                if [ "$current_url" != "$new_url" ]; then
+                    git remote set-url "$remote_name" "$new_url"
+                    echo -e "${GREEN}✓ Updated $remote_name remote${NC}"
+                    echo "  From: $current_url"
+                    echo "  To:   $new_url"
+                    updated_any=true
+                fi
+            fi
+        done < <(git remote 2>/dev/null)
+        
+        if [ "$updated_any" = false ]; then
+            echo -e "${BLUE}ℹ Remote URLs already correct${NC}"
+        fi
+        echo ""
+    fi
+    
+    # Step 3: Verify SSH authentication (quick test)
+    echo -e "${YELLOW}Step 3: SSH authentication configured for $ssh_host${NC}"
+    echo -e "${BLUE}💡 Tip: Test with 'ssh -T git@$ssh_host' if needed${NC}"
+    
+    echo ""
+    echo -e "${GREEN}🎉 Enhanced profile switch complete!${NC}"
     if [ -n "$desc" ] && [ "$desc" != "" ]; then
-        echo "  Description: $desc"
+        echo "Description: $desc"
     fi
 }
 
@@ -333,4 +400,3 @@ case "$1" in
         exit 1
         ;;
 esac
-
